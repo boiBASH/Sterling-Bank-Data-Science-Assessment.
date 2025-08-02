@@ -12,7 +12,7 @@ import traceback
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # your downloaded pipeline (could be full or light)
+MODEL_PATH = "model.pkl"  # your downloaded pipeline (could be full or light)
 LOGO_PATH = "sterling bank logo.png"
 DATA_PATH = "cleaned_loan_data.xlsx"
 
