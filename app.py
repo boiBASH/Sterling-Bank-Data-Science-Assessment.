@@ -7,12 +7,13 @@ from scipy.cluster.hierarchy import linkage, leaves_list
 import joblib
 from PIL import Image
 import os
+import traceback
 
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "model.pkl"
-LOGO_PATH = "sterling bank logo.png"
+MODEL_PATH = "light_rf_model.pkl"  # your downloaded pipeline (could be full or light)
+LOGO_PATH = "sterling_bank_logo.png"
 DATA_PATH = "cleaned_loan_data.xlsx"
 
 # === PAGE SETUP ===
@@ -25,15 +26,15 @@ with col_logo:
         st.markdown("**Sterling Bank**")
 with col_title:
     st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Data Explorer & Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Prediction-only dashboard using the extracted model; explore cohorts and score loans.", unsafe_allow_html=True)
+    st.markdown("Prediction-only dashboard using the provided model. Explore cohorts and score loans.", unsafe_allow_html=True)
 
-# === DATA LOADING ===
+# === LOAD DATA ===
 @st.cache_data
 def load_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"{DATA_PATH} not found in repo root. Commit it alongside app.py.")
+    st.error(f"Data file '{DATA_PATH}' not found in repo root. Commit it or upload manually.")
     st.stop()
 
 df = load_data(DATA_PATH)
@@ -98,7 +99,7 @@ col2.metric("Default Rate", f"{default_rate:.2%}")
 col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
 col4.metric("Unique Sectors", filtered["sector"].nunique())
 
-# === OVERVIEW & BREAKDOWN ===
+# === OVERVIEW ===
 st.markdown("## 📈 Overview & Breakdown")
 with st.container():
     c1, c2 = st.columns([2, 1])
@@ -127,7 +128,6 @@ with st.container():
                 color_continuous_scale="Blues",
             )
             st.plotly_chart(fig_kind, use_container_width=True)
-
     with c2:
         st.markdown("### Default Rate Over Time")
         if "report_date" in filtered.columns:
@@ -255,20 +255,33 @@ if combo:
 
 # === MODEL LOADING & PREDICTION ===
 st.markdown("## 🧠 Default Risk Scoring")
-st.caption("Using a local light RandomForest pipeline (imputer + scaler + RF).")
+st.caption("Uses local model. If it includes imblearn and errors surface, either install 'imbalanced-learn==0.11.0' or re-extract a light version.")
 
 @st.cache_resource
 def load_light_model(path):
     return joblib.load(path)
 
 if not os.path.exists(MODEL_PATH):
-    st.error(f"{MODEL_PATH} not found. Ensure you have extracted it and committed it.")
+    st.error(f"Model file '{MODEL_PATH}' not found. Place the .pkl in repo root.")
     st.stop()
 
+model = None
+load_error = None
 try:
     model = load_light_model(MODEL_PATH)
 except Exception as e:
-    st.error(f"Failed to load model: {e}")
+    load_error = e
+    st.error("Failed to load model. See guidance below.")
+    st.markdown("**Likely causes / remedies:**")
+    st.markdown(
+        """
+- The `.pkl` you provided contains `imblearn`/SMOTE, but `imbalanced-learn` isn't installed in this environment.  
+  **Fix:** add to `requirements.txt` and reinstall:  
+  `imbalanced-learn==0.11.0` (with compatible `scikit-learn==1.6.1`)  
+- Or re-extract a light pipeline that omits SMOTE (no imblearn) using the extraction script in a Python 3.11 environment.  
+"""
+    )
+    st.exception(load_error)
     st.stop()
 
 threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
@@ -298,8 +311,9 @@ if not example.empty:
             st.success(f"Default probability: {prob:.3f} → Predicted label: {label}")
         except Exception as e:
             st.error(f"Prediction failed: {e}")
+            st.text(traceback.format_exc())
 
-# Batch scoring (optional upload)
+# Batch scoring
 st.markdown("### Batch Scoring")
 uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
 if uploaded_batch:
@@ -322,6 +336,7 @@ if uploaded_batch:
         )
     except Exception as e:
         st.error(f"Batch scoring failed: {e}")
+        st.text(traceback.format_exc())
 
 # === EXPORT ===
 st.markdown("## 📦 Export Filtered Slice")
@@ -332,7 +347,8 @@ st.markdown(
     """
 ---
 **Notes:**  
-• Input features must match the training schema (leak columns and target dropped).  
-• This app does no training; the model pipeline was pre-extracted to avoid dependency/version issues.  
+- If the provided `.pkl` has imblearn/SMOTE inside, add to your `requirements.txt`:  
+  `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0` so it loads.  
+- For a lighter embeddable model, re-extract a pipeline without SMOTE (see extraction script).  
 """
 )
