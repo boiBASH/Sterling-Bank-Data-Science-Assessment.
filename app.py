@@ -89,9 +89,12 @@ def encode_df(df_in: pd.DataFrame) -> pd.DataFrame:
             df = df.drop(columns=c)
     return df
 
-# Encoded for exploration / batch scoring
+# Encoded versions
 df_encoded = encode_df(df_raw)
 df_encoded = make_cols_unique(df_encoded)
+
+# canonical feature list (what model expects)
+BASE_FEATURES = [c for c in df_encoded.columns if c != TARGET]
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
@@ -107,7 +110,7 @@ loan_age_range = st.sidebar.slider(
     step=10,
 )
 
-# Apply filters
+# apply filters
 filtered_raw = df_raw.copy()
 if sectors and "sector" in filtered_raw.columns:
     filtered_raw = filtered_raw[filtered_raw["sector"].isin(sectors)]
@@ -138,7 +141,7 @@ try:
     model = load_model(MODEL_PATH)
     st.success("✅ Model loaded.")
 except Exception as e:
-    st.error("Failed to load model. If it relies on imblearn/SMOTE, deploy under Python 3.11 with required versions.")
+    st.error("Failed to load model. If it relies on imblearn/SMOTE, deploy under Python 3.11 with appropriate versions.")
     st.exception(e)
     st.stop()
 
@@ -147,12 +150,12 @@ tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring
 
 with tab_explore:
     st.subheader("🔑 Key Metrics")
-    a, b, c, d = st.columns(4)
+    m1, m2, m3, m4 = st.columns(4)
     default_rate = filtered_encoded[TARGET].mean() if TARGET in filtered_encoded.columns else 0
-    a.metric("Total Loans", f"{len(filtered_encoded):,}")
-    b.metric("Default Rate", f"{default_rate:.2%}")
-    c.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
-    d.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
+    m1.metric("Total Loans", f"{len(filtered_encoded):,}")
+    m2.metric("Default Rate", f"{default_rate:.2%}")
+    m3.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
+    m4.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
 
     st.markdown("## Overview & Breakdown")
     with st.container():
@@ -237,7 +240,7 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.markdown("Interactive single-loan input. Numeric via sliders; categorical via selectboxes. Customer-facing status below.")
+    st.markdown("Interactive single-loan input. Numeric via sliders; categorical via selects. Customer-facing status below.")
 
     threshold = st.slider("Default probability threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01)
 
@@ -281,11 +284,19 @@ with tab_score:
         raw_input.update(num_vals)
         raw_input.update(cat_vals)
         input_df = pd.DataFrame([raw_input])
+
+        # encode and drop unwanted
         input_df = encode_df(input_df)
         for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
             if c in input_df.columns:
                 input_df = input_df.drop(columns=[c])
-        input_df = input_df.replace("", np.nan)
+
+        # align to training features
+        for feat in BASE_FEATURES:
+            if feat not in input_df.columns:
+                input_df[feat] = np.nan
+        input_df = input_df.loc[:, BASE_FEATURES]
+
         try:
             prob = model.predict_proba(input_df)[:, 1][0]
             label = int(prob >= threshold)
@@ -304,7 +315,13 @@ with tab_score:
         st.warning("Filtered slice is empty.")
     else:
         try:
-            X_batch = filtered_encoded.drop(columns=[TARGET], errors="ignore")
+            X_batch = filtered_encoded.copy()
+            # drop target and leaks
+            X_batch = X_batch.drop(columns=[TARGET] + LEAK_COLS, errors="ignore")
+            for feat in BASE_FEATURES:
+                if feat not in X_batch.columns:
+                    X_batch[feat] = np.nan
+            X_batch = X_batch.loc[:, BASE_FEATURES]
             probs = model.predict_proba(X_batch)[:, 1]
             output = filtered_raw.copy()
             output["default_probability"] = probs
@@ -326,12 +343,12 @@ st.markdown(
     """
 ---
 **Customer-facing default status logic:**  
-• Probability >= threshold → **Default** (high risk) with a warning.  
+• Probability ≥ threshold → **Default** (high risk) with a warning.  
 • Probability < threshold → **No Default** (low risk).  
 
 **Notes:**  
 • Categorical features are label-encoded on the fly to match training.  
 • The model expects preprocessed numeric inputs (imputer + scaler embedded).  
-• If you kept a pipeline with SMOTE/imbalanced-learn, run under Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
+• If you kept a pipeline with SMOTE/imbalanced-learn, deploy under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
