@@ -6,15 +6,18 @@ import plotly.graph_objects as go
 from scipy.cluster.hierarchy import linkage, leaves_list
 import joblib
 from PIL import Image
+import os
 
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "model.pkl"  # extracted pipeline: imputer + scaler + RF (no imblearn)
+MODEL_PATH = "model.pkl"
 LOGO_PATH = "sterling bank logo.png"
+DATA_PATH = "cleaned_loan_data.xlsx"
 
 # === PAGE SETUP ===
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
+# Header
 col_logo, col_title = st.columns([1, 8])
 with col_logo:
     try:
@@ -23,22 +26,38 @@ with col_logo:
         st.markdown("**Sterling Bank**")
 with col_title:
     st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Data Explorer & Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Clean interactive visualization and prediction using a serialized model.", unsafe_allow_html=True)
+    st.markdown("Prediction-only dashboard using pre-extracted model; visual exploration of loan cohorts.", unsafe_allow_html=True)
 
-# === DATA LOADING ===
+# === DATA LOADING (from repo root) ===
 @st.cache_data
-def load_excel(path):
+def load_data(path):
     return pd.read_excel(path)
 
-uploaded = st.file_uploader("Upload cleaned loan data (Excel)", type=["xlsx"], help="Or have cleaned_loan_data.xlsx in repo root.")
-if uploaded:
-    df = load_excel(uploaded)
-else:
-    try:
-        df = load_excel("cleaned_loan_data.xlsx")
-    except FileNotFoundError:
-        st.error("Dataset not found. Upload cleaned_loan_data.xlsx.")
-        st.stop()
+if not os.path.exists(DATA_PATH):
+    st.error(f"{DATA_PATH} not found in repo root. Commit it alongside app.py.")
+    st.stop()
+
+df = load_data(DATA_PATH)
+
+# === DEDUPE COLUMNS ===
+def make_cols_unique(df):
+    seen = {}
+    new_cols = []
+    for col in df.columns:
+        if col in seen:
+            seen[col] += 1
+            new_cols.append(f"{col}.{seen[col]}")
+        else:
+            seen[col] = 0
+            new_cols.append(col)
+    df.columns = new_cols
+    return df
+
+original_cols = df.columns.tolist()
+df = make_cols_unique(df)
+dupes = [c for c in original_cols if original_cols.count(c) > 1]
+if dupes:
+    st.warning(f"Duplicate column names were renamed: {set(dupes)}")
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
@@ -103,6 +122,7 @@ with st.container():
                 .reset_index()
                 .rename(columns={"index": "kind", "Default_status_kind": "count"})
             )
+            kind_df = kind_df.loc[:, ~kind_df.columns.duplicated()]
             fig_kind = px.bar(
                 kind_df,
                 x="kind",
@@ -239,11 +259,15 @@ if combo:
 
 # === MODEL LOADING & PREDICTION ===
 st.markdown("## 🧠 Default Risk Scoring")
-st.caption("Using the local light model (imputer + scaler + RF) for inference.")
+st.caption("Using a locally stored light RandomForest pipeline (no imblearn).")
 
 @st.cache_resource
 def load_light_model(path):
     return joblib.load(path)
+
+if not os.path.exists(MODEL_PATH):
+    st.error(f"{MODEL_PATH} not found. Run extraction script to produce it and commit to repo.")
+    st.stop()
 
 try:
     model = load_light_model(MODEL_PATH)
@@ -253,7 +277,7 @@ except Exception as e:
 
 threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
 
-# Single scoring
+# Single loan scoring
 st.markdown("### Single Loan Scoring")
 example = filtered.copy()
 for c in LEAK_COLS:
@@ -281,7 +305,9 @@ if not example.empty:
 
 # Batch scoring
 st.markdown("### Batch Scoring")
-uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
+batch_path = "batch_to_score.csv"
+# No uploader since using repo data; optionally you can read a fixed CSV if present
+uploaded_batch = st.file_uploader("Upload batch CSV for scoring (optional)", type=["csv"], key="batch")
 if uploaded_batch:
     batch = pd.read_csv(uploaded_batch)
     for c in LEAK_COLS:
@@ -313,6 +339,6 @@ st.markdown(
 ---
 **Notes:**  
 • Features must align with the training schema (leak columns and target dropped).  
-• This app is prediction-only; model pipeline was pre-extracted to avoid environment compatibility issues.  
+• Model pipeline was pre-extracted; this app does no training.  
 """
 )
