@@ -21,60 +21,61 @@ DEFAULT_THRESHOLD = 0.5
 st.set_page_config(page_title="Sterling Loan Explorer & Scoring", layout="wide")
 
 # === HEADER ===
-c1, c2 = st.columns([1, 7])
-with c1:
+logo_col, title_col = st.columns([1, 8])
+with logo_col:
     try:
         st.image(LOGO_PATH, width=80)
-    except FileNotFoundError:
+    except Exception:
         st.markdown("**Sterling Bank**")
-with c2:
+with title_col:
     st.markdown("<h1 style='margin:0;'>📊 Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Explore loan data and get a customer-facing default status.", unsafe_allow_html=True)
+    st.markdown("Explore and score loans; customer-facing default status output.", unsafe_allow_html=True)
 
-# === UTILITIES ===
-def make_cols_unique(df):
+# === UTILS ===
+def make_cols_unique(df: pd.DataFrame) -> pd.DataFrame:
     seen = {}
-    new = []
+    new_cols = []
     for c in df.columns:
         if c in seen:
             seen[c] += 1
-            new.append(f"{c}.{seen[c]}")
+            new_cols.append(f"{c}.{seen[c]}")
         else:
             seen[c] = 0
-            new.append(c)
-    df.columns = new
+            new_cols.append(c)
+    df.columns = new_cols
     return df
 
-def sanitize_df_for_plot(df):
-    df2 = df.copy()
-    df2 = df2.loc[:, ~df2.columns.duplicated()]
-    return df2
+def sanitize_df_for_plot(df: pd.DataFrame) -> pd.DataFrame:
+    return df.loc[:, ~df.columns.duplicated()]
 
-# === LOAD DATA ===
+# === DATA LOADING ===
 @st.cache_data
 def load_raw_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"Data file '{DATA_PATH}' not found in repo root.")
+    st.error(f"Missing data file '{DATA_PATH}'. Place cleaned_loan_data.xlsx in repo root.")
     st.stop()
-
 df_raw = load_raw_data(DATA_PATH)
 df_raw = make_cols_unique(df_raw)
 
-# === LOAD LABEL ENCODERS ===
+# === LABEL ENCODER LOADING ===
 @st.cache_resource
 def load_label_encoders(path):
     return joblib.load(path)
 
 if not os.path.exists(ENCODERS_PATH):
-    st.error(f"Label encoders file '{ENCODERS_PATH}' missing. Run build_encoders.py to create it.")
+    st.error(f"Label encoders file '{ENCODERS_PATH}' not found. Run build_encoders.py to generate it.")
     st.stop()
-
-label_encoders = load_label_encoders(ENCODERS_PATH)
+try:
+    label_encoders = load_label_encoders(ENCODERS_PATH)
+except Exception as e:
+    st.error("Failed to load label encoders.") 
+    st.exception(e)
+    st.stop()
 categorical_cols = list(label_encoders.keys())
 
-def encode_df(df_in):
+def encode_df(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
     for col in categorical_cols:
         if col in df.columns:
@@ -82,14 +83,12 @@ def encode_df(df_in):
             try:
                 df[col] = label_encoders[col].transform(df[col])
             except Exception:
-                # unseen category fallback: map to most frequent or -1
-                df[col] = -1
+                df[col] = -1  # unseen category fallback
     for c in DROP_REDUNDANT:
         if c in df.columns:
             df = df.drop(columns=c)
     return df
 
-# Encoded version for visuals / batch scoring
 df_encoded = encode_df(df_raw)
 df_encoded = make_cols_unique(df_encoded)
 
@@ -125,7 +124,7 @@ filtered_raw = make_cols_unique(filtered_raw)
 filtered_encoded = encode_df(filtered_raw)
 filtered_encoded = make_cols_unique(filtered_encoded)
 
-# === LOAD MODEL ===
+# === MODEL LOADING ===
 @st.cache_resource
 def load_model(path):
     return joblib.load(path)
@@ -133,11 +132,11 @@ def load_model(path):
 if not os.path.exists(MODEL_PATH):
     st.error(f"Model file '{MODEL_PATH}' not found.")
     st.stop()
-
 try:
     model = load_model(MODEL_PATH)
+    st.success("✅ Model loaded.")
 except Exception as e:
-    st.error("Failed to load model. If it uses imblearn/SMOTE, deploy under Python 3.11 with pinned versions.")
+    st.error("Failed to load model. If it contains imblearn/SMOTE you need Python 3.11 with pinned versions.")
     st.exception(e)
     st.stop()
 
@@ -146,12 +145,12 @@ tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring
 
 with tab_explore:
     st.subheader("🔑 Key Metrics")
-    c1, c2, c3, c4 = st.columns(4)
+    m1, m2, m3, m4 = st.columns(4)
     default_rate = filtered_encoded[TARGET].mean() if TARGET in filtered_encoded.columns else 0
-    c1.metric("Total Loans", f"{len(filtered_encoded):,}")
-    c2.metric("Default Rate", f"{default_rate:.2%}")
-    c3.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
-    c4.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
+    m1.metric("Total Loans", f"{len(filtered_encoded):,}")
+    m2.metric("Default Rate", f"{default_rate:.2%}")
+    m3.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
+    m4.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
 
     st.markdown("## Overview & Breakdown")
     with st.container():
@@ -211,7 +210,7 @@ with tab_explore:
                 x="sector",
                 y="default_rate",
                 color="count",
-                title="Default Rate by Sector (encoded)",
+                title="Default Rate by Sector",
                 hover_data={"count": True, "default_rate": ":.1%"},
             )
             fig_sector.update_yaxes(tickformat=".0%")
@@ -236,11 +235,11 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.markdown("Raw categorical inputs are label-encoded; prediction outputs customer-friendly status.")
+    st.markdown("Raw categorical inputs are label-encoded before scoring. Customer-facing status shown.")
 
     threshold = st.slider("Default probability threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01)
 
-    # === SINGLE LOAN SCORING ===
+    # Single loan scoring
     st.markdown("### Single Loan Scoring")
     example_raw = filtered_raw.copy()
     for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
@@ -251,7 +250,7 @@ with tab_score:
         st.warning("No features available for single scoring.")
     else:
         input_vals = {}
-        with st.form("single_score_form"):
+        with st.form("single_score"):
             for col in example_raw.columns:
                 sample = example_raw[col].dropna().iloc[0] if not example_raw[col].dropna().empty else ""
                 if pd.api.types.is_numeric_dtype(example_raw[col]):
@@ -261,9 +260,7 @@ with tab_score:
             submitted = st.form_submit_button("Score Loan")
         if submitted:
             input_df = pd.DataFrame([input_vals])
-            # encode categoricals
             input_df = encode_df(input_df)
-            # drop leaks/redundant/target if present
             for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
                 if c in input_df.columns:
                     input_df = input_df.drop(columns=[c])
@@ -277,43 +274,5 @@ with tab_score:
                 st.success(f"Default probability: {prob:.3f}")
                 st.info(banner)
             except Exception as e:
-                st.error("Prediction failed; ensure the input aligns with training features.")
-                st.text(traceback.format_exc())
-
-    # === BATCH SCORING ON FILTERED SLICE ===
-    st.markdown("### Batch Scoring (Filtered Slice)")
-    if filtered_encoded.empty:
-        st.warning("Filtered slice is empty; nothing to score.")
-    else:
-        try:
-            X_batch = filtered_encoded.drop(columns=[TARGET], errors="ignore")
-            probs = model.predict_proba(X_batch)[:, 1]
-            output = filtered_raw.copy()
-            output["default_probability"] = probs
-            output["predicted_default"] = (probs >= threshold).astype(int)
-            output["status"] = output["predicted_default"].map({1: "Default", 0: "No Default"})
-            st.dataframe(output.head(50))
-            st.download_button(
-                "Download scored filtered slice",
-                output.to_csv(index=False).encode("utf-8"),
-                "scored_filtered_loans.csv",
-                "text/csv",
-            )
-        except Exception as e:
-            st.error("Batch scoring failed on filtered slice.")
-            st.text(traceback.format_exc())
-
-# === FOOTER ===
-st.markdown(
-    """
----
-**Customer-facing default status:**  
-- If probability >= threshold, treated as **Default** (high risk) with a warning.  
-- Otherwise, **No Default** (low risk).  
-
-**Deployment notes:**  
-- The model expects numeric (encoded) inputs; categorical raw values are encoded via saved `label_encoders.pkl`.  
-- The pipeline must include fitted imputer & scaler (light model) to avoid `NotFittedError`.  
-- If using the original full pipeline with SMOTE, run under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
-"""
-)
+                st.error("Prediction failed; check input formatting.")
+                st.text(trac
