@@ -40,7 +40,7 @@ The project workflow is structured into clear stages:
 
 ### 3. **Model Building and Evaluation** (`Model_Building_Evaluation.ipynb` & `Model_Building_Evaluation_with_Dagshub.ipynb`)
 
-* Training Random Forest Classifier
+* Training Logistic Regression and Random Forest Classifier
 * Evaluating model performance with classification metrics
 * Dagshub experiment tracking integration for reproducibility
 
