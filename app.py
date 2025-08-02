@@ -13,7 +13,7 @@ from sklearn.preprocessing import LabelEncoder
 TARGET = "Default_status"
 DROP_REDUNDANT = ["Default_status_kind", "ARR_STATUS", "LINE_DESC"]
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # should be pipeline with fitted preprocessing + RF
+MODEL_PATH = "light_rf_model.pkl"  # pipeline with fitted preprocessing + RF (no imblearn)
 DATA_PATH = "cleaned_loan_data.xlsx"
 LOGO_PATH = "sterling bank logo.png"
 
@@ -30,6 +30,25 @@ with col_title:
     st.markdown("<h1 style='margin:0;'> Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
     st.markdown("Explore and score loans. Prediction is isolated in its own section.", unsafe_allow_html=True)
 
+# === UTILITIES ===
+def make_cols_unique(df):
+    seen = {}
+    new = []
+    for c in df.columns:
+        if c in seen:
+            seen[c] += 1
+            new.append(f"{c}.{seen[c]}")
+        else:
+            seen[c] = 0
+            new.append(c)
+    df.columns = new
+    return df
+
+def sanitize_df_for_plot(df):
+    df2 = df.copy()
+    df2 = df2.loc[:, ~df2.columns.duplicated()]
+    return df2
+
 # === LOAD DATA ===
 @st.cache_data
 def load_raw_data(path):
@@ -40,6 +59,7 @@ if not os.path.exists(DATA_PATH):
     st.stop()
 
 df_raw = load_raw_data(DATA_PATH)
+df_raw = make_cols_unique(df_raw)  # prevent duplicates early
 
 # === PREPROCESS: label encode exactly like training ===
 categorical_cols = df_raw.select_dtypes(include="object").columns.tolist()
@@ -68,21 +88,6 @@ def encode_dataframe(df_in):
     return df
 
 df_encoded = encode_dataframe(df_raw)
-
-# === DEDUPE COLUMNS ===
-def make_cols_unique(df):
-    seen = {}
-    new = []
-    for c in df.columns:
-        if c in seen:
-            seen[c] += 1
-            new.append(f"{c}.{seen[c]}")
-        else:
-            seen[c] = 0
-            new.append(c)
-    df.columns = new
-    return df
-
 df_encoded = make_cols_unique(df_encoded)
 
 # === SIDEBAR FILTERS ===
@@ -113,8 +118,9 @@ if "loan_age_days" in filtered_raw.columns:
     filtered_raw = filtered_raw[
         (filtered_raw["loan_age_days"] >= loan_age_range[0]) & (filtered_raw["loan_age_days"] <= loan_age_range[1])
     ]
-
+filtered_raw = make_cols_unique(filtered_raw)
 filtered_encoded = encode_dataframe(filtered_raw)
+filtered_encoded = make_cols_unique(filtered_encoded)
 
 # === TABS ===
 tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring"])
@@ -141,16 +147,14 @@ with tab_explore:
                     hole=0.35,
                     color_discrete_sequence=px.colors.qualitative.Set2,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(sanitize_df_for_plot(fig), use_container_width=True) if isinstance(fig, pd.DataFrame) else st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("### Default Status Kind (raw)")
             if "Default_status_kind" in filtered_raw.columns:
-                kind_df = (
-                    filtered_raw["Default_status_kind"]
-                    .value_counts()
-                    .reset_index()
-                    .rename(columns={"index": "kind", "Default_status_kind": "count"})
-                )
+                kind_series = filtered_raw["Default_status_kind"].dropna()
+                kind_df = kind_series.value_counts().reset_index()
+                kind_df.columns = ["kind", "count"]
+                kind_df = sanitize_df_for_plot(kind_df)
                 fig_kind = px.bar(
                     kind_df,
                     x="kind",
@@ -219,7 +223,7 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.caption("Raw inputs are label-encoded before scoring. Batch uses the filtered slice.")
+    st.caption("Raw categorical inputs are label-encoded before scoring. Batch scores the filtered slice.")
 
     # === MODEL LOAD ===
     @st.cache_resource
@@ -234,7 +238,7 @@ with tab_score:
         model = load_model(MODEL_PATH)
         st.success("✅ Model loaded.")
     except Exception as e:
-        st.error("Failed to load model. If it embeds imblearn/SMOTE you may need Python 3.11 with matching versions.")
+        st.error("Failed to load model. If it contains imblearn/SMOTE you may need Python 3.11 with pinned versions.")
         st.exception(e)
         st.stop()
 
@@ -282,10 +286,11 @@ with tab_score:
         st.warning("Filtered slice is empty; nothing to score.")
     else:
         try:
-            preds = model.predict_proba(filtered_encoded.drop(columns=[TARGET], errors="ignore"))[:, 1]
+            X_batch = filtered_encoded.drop(columns=[TARGET], errors="ignore")
+            probs = model.predict_proba(X_batch)[:, 1]
             output = filtered_raw.copy()
-            output["default_probability"] = preds
-            output["predicted_default"] = (preds >= threshold).astype(int)
+            output["default_probability"] = probs
+            output["predicted_default"] = (probs >= threshold).astype(int)
             st.dataframe(output.head(50))
             st.download_button(
                 "Download scored filtered slice",
@@ -302,8 +307,8 @@ st.markdown(
     """
 ---
 **Notes:**  
-• Categorical inputs are label-encoded exactly as in training.  
-• The model must embed the fitted preprocessing (so raw label-encoded inputs work) and preferably not depend on imblearn for Python 3.13.  
-• If you retain the original pipeline with SMOTE, deploy under Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
+• Categorical inputs are label-encoded exactly as during training.  
+• The model must contain fitted preprocessing (so it accepts the encoded numeric features) and ideally avoid imblearn for Python 3.13.  
+• If you keep the original pipeline with SMOTE, deploy under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
