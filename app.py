@@ -140,9 +140,10 @@ if not os.path.exists(MODEL_PATH):
 
 try:
     model = load_model(MODEL_PATH)
-    st.success("✅ Model loaded.")
+    # optional minimal indicator (comment out if you want nothing): 
+    # st.info("Model loaded.", icon="ℹ️")
 except Exception as e:
-    st.error("Failed to load model. If it uses imblearn/SMOTE, deploy under Python 3.11 with matching versions.")
+    st.error("Failed to load model. If it relies on imblearn/SMOTE, deploy under Python 3.11 with matching versions.")
     st.exception(e)
     st.stop()
 
@@ -347,11 +348,6 @@ st.markdown(
 ---
 **Customer-facing default status logic:**  
 • Probability ≥ threshold → **Default** (high risk) with a warning.  
-• Probability < threshold → **No Default** (low risk).  
-
-**Notes:**  
-• Categorical features are label-encoded on the fly to match training.  
-• The model expects preprocessed numeric input (imputer + scaler embedded).  
-• If you kept a pipeline with SMOTE/imbalanced-learn, deploy under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
+• Probability < threshold → **No Default** (low risk).   
 """
 )
