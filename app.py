@@ -10,7 +10,7 @@ from PIL import Image
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "model.pkl"  # extracted pipeline: imputer + scaler + RF
+MODEL_PATH = "model.pkl"  # extracted pipeline: imputer + scaler + RF (no imblearn)
 LOGO_PATH = "sterling_bank_logo.png"
 
 # === PAGE SETUP ===
@@ -23,7 +23,7 @@ with col_logo:
         st.markdown("**Sterling Bank**")
 with col_title:
     st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Data Explorer & Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Clean interactive visualization and default risk scoring using a serialized model.", unsafe_allow_html=True)
+    st.markdown("Clean interactive visualization and prediction using a serialized model.", unsafe_allow_html=True)
 
 # === DATA LOADING ===
 @st.cache_data
@@ -40,7 +40,7 @@ else:
         st.error("Dataset not found. Upload cleaned_loan_data.xlsx.")
         st.stop()
 
-# === FILTERS ===
+# === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
 sectors = st.sidebar.multiselect("Sector", options=sorted(df["sector"].dropna().unique()))
 facilities = st.sidebar.multiselect("Facility Type", options=sorted(df["FACILITY_TYPE"].dropna().unique()))
@@ -71,16 +71,16 @@ filtered = filtered[
     (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
 ]
 
-# === METRICS ===
+# === KEY METRICS ===
 st.subheader("🔑 Key Metrics")
 col1, col2, col3, col4 = st.columns(4)
 default_rate = filtered[TARGET].mean() if TARGET in filtered.columns else 0
 col1.metric("Total Loans", f"{len(filtered):,}")
 col2.metric("Default Rate", f"{default_rate:.2%}")
-col3.metric("Avg Loan Age", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
+col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
 col4.metric("Unique Sectors", filtered["sector"].nunique())
 
-# === OVERVIEW ===
+# === OVERVIEW & BREAKDOWN ===
 st.markdown("## 📈 Overview & Breakdown")
 with st.container():
     c1, c2 = st.columns([2, 1])
@@ -239,7 +239,7 @@ if combo:
 
 # === MODEL LOADING & PREDICTION ===
 st.markdown("## 🧠 Default Risk Scoring")
-st.caption("Using pre-extracted light RandomForest pipeline (imputer + scaler + RF).")
+st.caption("Using the local light model (imputer + scaler + RF) for inference.")
 
 @st.cache_resource
 def load_light_model(path):
@@ -312,7 +312,7 @@ st.markdown(
     """
 ---
 **Notes:**  
-• Features must align with training schema (leak columns and target dropped).  
-• Prediction uses the local light model to avoid dependency conflicts.  
+• Features must align with the training schema (leak columns and target dropped).  
+• This app is prediction-only; model pipeline was pre-extracted to avoid environment compatibility issues.  
 """
 )
