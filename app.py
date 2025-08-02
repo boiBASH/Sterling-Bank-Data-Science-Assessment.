@@ -7,28 +7,29 @@ import traceback
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.cluster.hierarchy import linkage, leaves_list
-from sklearn.preprocessing import LabelEncoder
 
 # === CONFIG ===
 TARGET = "Default_status"
 DROP_REDUNDANT = ["Default_status_kind", "ARR_STATUS", "LINE_DESC"]
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # pipeline with fitted preprocessing + RF (no imblearn)
+MODEL_PATH = "light_rf_model.pkl"
+ENCODERS_PATH = "label_encoders.pkl"
 DATA_PATH = "cleaned_loan_data.xlsx"
 LOGO_PATH = "sterling bank logo.png"
+DEFAULT_THRESHOLD = 0.5
 
-st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
+st.set_page_config(page_title="Sterling Loan Explorer & Scoring", layout="wide")
 
 # === HEADER ===
-col_logo, col_title = st.columns([1, 8])
-with col_logo:
+c1, c2 = st.columns([1, 7])
+with c1:
     try:
         st.image(LOGO_PATH, width=80)
     except FileNotFoundError:
         st.markdown("**Sterling Bank**")
-with col_title:
-    st.markdown("<h1 style='margin:0;'> Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Explore and score loans. Prediction is isolated in its own section.", unsafe_allow_html=True)
+with c2:
+    st.markdown("<h1 style='margin:0;'>📊 Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
+    st.markdown("Explore loan data and get a customer-facing default status.", unsafe_allow_html=True)
 
 # === UTILITIES ===
 def make_cols_unique(df):
@@ -55,39 +56,41 @@ def load_raw_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"{DATA_PATH} missing in repo root.")
+    st.error(f"Data file '{DATA_PATH}' not found in repo root.")
     st.stop()
 
 df_raw = load_raw_data(DATA_PATH)
-df_raw = make_cols_unique(df_raw)  # prevent duplicates early
+df_raw = make_cols_unique(df_raw)
 
-# === PREPROCESS: label encode exactly like training ===
-categorical_cols = df_raw.select_dtypes(include="object").columns.tolist()
-for rm in DROP_REDUNDANT:
-    if rm in categorical_cols:
-        categorical_cols.remove(rm)
-if TARGET in categorical_cols:
-    categorical_cols.remove(TARGET)
+# === LOAD LABEL ENCODERS ===
+@st.cache_resource
+def load_label_encoders(path):
+    return joblib.load(path)
 
-label_encoders = {}
-for col in categorical_cols:
-    le = LabelEncoder()
-    df_raw[col] = df_raw[col].astype(str).fillna("___MISSING___")
-    le.fit(df_raw[col])
-    label_encoders[col] = le
+if not os.path.exists(ENCODERS_PATH):
+    st.error(f"Label encoders file '{ENCODERS_PATH}' missing. Run build_encoders.py to create it.")
+    st.stop()
 
-def encode_dataframe(df_in):
+label_encoders = load_label_encoders(ENCODERS_PATH)
+categorical_cols = list(label_encoders.keys())
+
+def encode_df(df_in):
     df = df_in.copy()
     for col in categorical_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).fillna("___MISSING___")
-            df[col] = label_encoders[col].transform(df[col])
+            try:
+                df[col] = label_encoders[col].transform(df[col])
+            except Exception:
+                # unseen category fallback: map to most frequent or -1
+                df[col] = -1
     for c in DROP_REDUNDANT:
         if c in df.columns:
             df = df.drop(columns=c)
     return df
 
-df_encoded = encode_dataframe(df_raw)
+# Encoded version for visuals / batch scoring
+df_encoded = encode_df(df_raw)
 df_encoded = make_cols_unique(df_encoded)
 
 # === SIDEBAR FILTERS ===
@@ -119,8 +122,24 @@ if "loan_age_days" in filtered_raw.columns:
         (filtered_raw["loan_age_days"] >= loan_age_range[0]) & (filtered_raw["loan_age_days"] <= loan_age_range[1])
     ]
 filtered_raw = make_cols_unique(filtered_raw)
-filtered_encoded = encode_dataframe(filtered_raw)
+filtered_encoded = encode_df(filtered_raw)
 filtered_encoded = make_cols_unique(filtered_encoded)
+
+# === LOAD MODEL ===
+@st.cache_resource
+def load_model(path):
+    return joblib.load(path)
+
+if not os.path.exists(MODEL_PATH):
+    st.error(f"Model file '{MODEL_PATH}' not found.")
+    st.stop()
+
+try:
+    model = load_model(MODEL_PATH)
+except Exception as e:
+    st.error("Failed to load model. If it uses imblearn/SMOTE, deploy under Python 3.11 with pinned versions.")
+    st.exception(e)
+    st.stop()
 
 # === TABS ===
 tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring"])
@@ -138,7 +157,7 @@ with tab_explore:
     with st.container():
         left, right = st.columns([2, 1])
         with left:
-            st.markdown("### Default Status")
+            st.markdown("### Default Status Distribution")
             if TARGET in filtered_encoded.columns:
                 fig = px.pie(
                     filtered_encoded,
@@ -147,7 +166,7 @@ with tab_explore:
                     hole=0.35,
                     color_discrete_sequence=px.colors.qualitative.Set2,
                 )
-                st.plotly_chart(sanitize_df_for_plot(fig), use_container_width=True) if isinstance(fig, pd.DataFrame) else st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("### Default Status Kind (raw)")
             if "Default_status_kind" in filtered_raw.columns:
@@ -173,17 +192,11 @@ with tab_explore:
                     .mean()
                     .reset_index(name="default_rate")
                 )
-                fig_time = px.line(
-                    time_series,
-                    x="report_date",
-                    y="default_rate",
-                    title="Default Rate Over Time",
-                    markers=True,
-                )
+                fig_time = px.line(time_series, x="report_date", y="default_rate", title="Default Rate Over Time", markers=True)
                 fig_time.update_yaxes(tickformat=".0%")
                 st.plotly_chart(fig_time, use_container_width=True)
 
-    st.markdown("## 🧩 Segment Performance")
+    st.markdown("## Segment Performance")
     s1, s2 = st.columns(2)
     with s1:
         if "sector" in filtered_raw.columns:
@@ -223,26 +236,9 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.caption("Raw categorical inputs are label-encoded before scoring. Batch scores the filtered slice.")
+    st.markdown("Raw categorical inputs are label-encoded; prediction outputs customer-friendly status.")
 
-    # === MODEL LOAD ===
-    @st.cache_resource
-    def load_model(path):
-        return joblib.load(path)
-
-    if not os.path.exists(MODEL_PATH):
-        st.error(f"Model '{MODEL_PATH}' not found.")
-        st.stop()
-
-    try:
-        model = load_model(MODEL_PATH)
-        st.success("✅ Model loaded.")
-    except Exception as e:
-        st.error("Failed to load model. If it contains imblearn/SMOTE you may need Python 3.11 with pinned versions.")
-        st.exception(e)
-        st.stop()
-
-    threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
+    threshold = st.slider("Default probability threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01)
 
     # === SINGLE LOAN SCORING ===
     st.markdown("### Single Loan Scoring")
@@ -250,6 +246,7 @@ with tab_score:
     for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
         if c in example_raw.columns:
             example_raw = example_raw.drop(columns=[c])
+
     if example_raw.empty:
         st.warning("No features available for single scoring.")
     else:
@@ -264,10 +261,9 @@ with tab_score:
             submitted = st.form_submit_button("Score Loan")
         if submitted:
             input_df = pd.DataFrame([input_vals])
-            for col in categorical_cols:
-                if col in input_df.columns:
-                    input_df[col] = input_df[col].astype(str).fillna("___MISSING___")
-                    input_df[col] = label_encoders[col].transform(input_df[col])
+            # encode categoricals
+            input_df = encode_df(input_df)
+            # drop leaks/redundant/target if present
             for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
                 if c in input_df.columns:
                     input_df = input_df.drop(columns=[c])
@@ -275,9 +271,13 @@ with tab_score:
             try:
                 prob = model.predict_proba(input_df)[:, 1][0]
                 label = int(prob >= threshold)
-                st.success(f"Default probability: {prob:.3f} → Predicted label: {label}")
+                status = "Default" if label == 1 else "No Default"
+                banner = "⚠️ High risk of default" if label == 1 else "✅ Low risk of default"
+                st.metric("Predicted Status", status)
+                st.success(f"Default probability: {prob:.3f}")
+                st.info(banner)
             except Exception as e:
-                st.error("Prediction failed; check input formatting and feature alignment.")
+                st.error("Prediction failed; ensure the input aligns with training features.")
                 st.text(traceback.format_exc())
 
     # === BATCH SCORING ON FILTERED SLICE ===
@@ -291,6 +291,7 @@ with tab_score:
             output = filtered_raw.copy()
             output["default_probability"] = probs
             output["predicted_default"] = (probs >= threshold).astype(int)
+            output["status"] = output["predicted_default"].map({1: "Default", 0: "No Default"})
             st.dataframe(output.head(50))
             st.download_button(
                 "Download scored filtered slice",
@@ -306,9 +307,13 @@ with tab_score:
 st.markdown(
     """
 ---
-**Notes:**  
-• Categorical inputs are label-encoded exactly as during training.  
-• The model must contain fitted preprocessing (so it accepts the encoded numeric features) and ideally avoid imblearn for Python 3.13.  
-• If you keep the original pipeline with SMOTE, deploy under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
+**Customer-facing default status:**  
+- If probability >= threshold, treated as **Default** (high risk) with a warning.  
+- Otherwise, **No Default** (low risk).  
+
+**Deployment notes:**  
+- The model expects numeric (encoded) inputs; categorical raw values are encoded via saved `label_encoders.pkl`.  
+- The pipeline must include fitted imputer & scaler (light model) to avoid `NotFittedError`.  
+- If using the original full pipeline with SMOTE, run under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
