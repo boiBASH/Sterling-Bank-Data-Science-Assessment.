@@ -11,7 +11,7 @@ import traceback
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # should be a light pipeline with fitted preprocess + RF (no imblearn)
+MODEL_PATH = "light_rf_model.pkl"  # must be the extracted pipeline with fitted preprocessing + RF
 DATA_PATH = "cleaned_loan_data.xlsx"
 LOGO_PATH = "sterling bank logo.png"
 
@@ -26,7 +26,7 @@ with col_logo:
         st.markdown("**Sterling Bank**")
 with col_title:
     st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Explore cleaned loan data and score default risk. Prediction is separated in its own section.", unsafe_allow_html=True)
+    st.markdown("Explore loan data and score default risk. Prediction lives in its own section.", unsafe_allow_html=True)
 
 # === DATA LOADING ===
 @st.cache_data
@@ -39,7 +39,7 @@ if not os.path.exists(DATA_PATH):
 
 df = load_data(DATA_PATH)
 
-# dedupe columns (avoid duplicate-name plotly errors)
+# === DEDUPE COLUMNS ===
 def make_cols_unique(df):
     seen = {}
     new_cols = []
@@ -61,34 +61,35 @@ if dupes:
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
-sectors = st.sidebar.multiselect("Sector", options=sorted(df["sector"].dropna().unique()))
-facilities = st.sidebar.multiselect("Facility Type", options=sorted(df["FACILITY_TYPE"].dropna().unique()))
+sectors = st.sidebar.multiselect("Sector", options=sorted(df["sector"].dropna().unique()) if "sector" in df.columns else [])
+facilities = st.sidebar.multiselect("Facility Type", options=sorted(df["FACILITY_TYPE"].dropna().unique()) if "FACILITY_TYPE" in df.columns else [])
 is_active = st.sidebar.selectbox("Is Active Loans", ["All", "Active", "Inactive"])
-employment = st.sidebar.multiselect("Employment Status", options=sorted(df["employment_status"].dropna().unique()))
-default_kind = st.sidebar.multiselect("Default Status Kind", options=sorted(df["Default_status_kind"].dropna().unique()))
+employment = st.sidebar.multiselect("Employment Status", options=sorted(df["employment_status"].dropna().unique()) if "employment_status" in df.columns else [])
+default_kind = st.sidebar.multiselect("Default Status Kind", options=sorted(df["Default_status_kind"].dropna().unique()) if "Default_status_kind" in df.columns else [])
 loan_age_range = st.sidebar.slider(
     "Loan Age Days",
-    min_value=int(df["loan_age_days"].dropna().min()),
-    max_value=int(df["loan_age_days"].dropna().quantile(0.99)),
-    value=(0, int(df["loan_age_days"].dropna().quantile(0.75))),
+    min_value=int(df["loan_age_days"].dropna().min()) if "loan_age_days" in df.columns else 0,
+    max_value=int(df["loan_age_days"].dropna().quantile(0.99)) if "loan_age_days" in df.columns else 1,
+    value=(0, int(df["loan_age_days"].dropna().quantile(0.75))) if "loan_age_days" in df.columns else (0, 1),
     step=10,
 )
 
 # === APPLY FILTERS ===
 filtered = df.copy()
-if sectors:
+if sectors and "sector" in filtered.columns:
     filtered = filtered[filtered["sector"].isin(sectors)]
-if facilities:
+if facilities and "FACILITY_TYPE" in filtered.columns:
     filtered = filtered[filtered["FACILITY_TYPE"].isin(facilities)]
-if is_active != "All":
+if is_active != "All" and "Is_Active_loans" in filtered.columns:
     filtered = filtered[filtered["Is_Active_loans"].str.contains(is_active, case=False, na=False)]
-if employment:
+if employment and "employment_status" in filtered.columns:
     filtered = filtered[filtered["employment_status"].isin(employment)]
-if default_kind:
+if default_kind and "Default_status_kind" in filtered.columns:
     filtered = filtered[filtered["Default_status_kind"].isin(default_kind)]
-filtered = filtered[
-    (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
-]
+if "loan_age_days" in filtered.columns:
+    filtered = filtered[
+        (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
+    ]
 
 # === TABS ===
 tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring"])
@@ -100,7 +101,7 @@ with tab_explore:
     col1.metric("Total Loans", f"{len(filtered):,}")
     col2.metric("Default Rate", f"{default_rate:.2%}")
     col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
-    col4.metric("Unique Sectors", filtered["sector"].nunique())
+    col4.metric("Unique Sectors", filtered["sector"].nunique() if "sector" in filtered.columns else 0)
 
     st.markdown("## Overview & Breakdown")
     with st.container():
@@ -132,7 +133,7 @@ with tab_explore:
                 st.plotly_chart(fig_kind, use_container_width=True)
         with c2:
             st.markdown("### Default Rate Over Time")
-            if "report_date" in filtered.columns:
+            if "report_date" in filtered.columns and TARGET in filtered.columns:
                 time_series = (
                     filtered.assign(report_date=pd.to_datetime(filtered["report_date"]).dt.date)
                     .groupby("report_date")[TARGET]
@@ -253,34 +254,33 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.caption("Prediction is isolated here. Model is expected to be a light pipeline (fitted imputer+scaler+RF) without imblearn.")
+    st.caption("Prediction is isolated here. Model is expected to be a light pipeline (fitted preprocessing + RF) without imblearn.")
 
-    # Load model defensively
+    # === MODEL LOAD ===
     @st.cache_resource
     def load_light_model(path):
         return joblib.load(path)
 
     if not os.path.exists(MODEL_PATH):
-        st.error(f"Model '{MODEL_PATH}' not found. Place a properly extracted light model in repo root.")
+        st.error(f"Model file '{MODEL_PATH}' not found. Place the correctly extracted light model in repo root.")
         st.stop()
 
-    model = None
     try:
         model = load_light_model(MODEL_PATH)
         st.success("✅ Model loaded.")
     except Exception as e:
-        st.error("Failed to load model. Likely contains imblearn/SMOTE and you’re on Python 3.13 or incompatible environment.")
+        st.error("Failed to load model. It likely still embeds imblearn/SMOTE and you're running on incompatible environment.")
         st.markdown(
             "**Fix options:**  \n"
-            "- Re-extract a light model without SMOTE (no imblearn) using the provided extraction script.  \n"
-            "- OR run under Python 3.11 with pinned versions: `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`."
+            "- Re-extract a light model without SMOTE (no imblearn) using the extraction script.  \n"
+            "- OR switch to Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0` if you want to keep the original pipeline."
         )
         st.exception(e)
         st.stop()
 
     threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
 
-    # Single loan scoring
+    # === SINGLE LOAN SCORING ===
     st.markdown("### Single Loan Scoring")
     example = filtered.copy()
     for c in LEAK_COLS:
@@ -293,22 +293,24 @@ with tab_score:
         input_vals = {}
         with st.form("single_score"):
             for col in example.columns:
+                sample_val = example[col].dropna().iloc[0] if not example[col].dropna().empty else ""
                 if pd.api.types.is_numeric_dtype(example[col]):
-                    input_vals[col] = st.number_input(col, value=float(example[col].iloc[0]), key=f"num_{col}")
+                    input_vals[col] = st.number_input(col, value=float(sample_val) if sample_val != "" else 0.0, key=f"num_{col}")
                 else:
-                    input_vals[col] = st.text_input(col, value=str(example[col].iloc[0]), key=f"txt_{col}")
+                    input_vals[col] = st.text_input(col, value=str(sample_val), key=f"txt_{col}")
             submitted = st.form_submit_button("Score Loan")
         if submitted:
             input_df = pd.DataFrame([input_vals])
+            input_df = input_df.replace("", np.nan)
             try:
                 prob = model.predict_proba(input_df)[:, 1][0]
                 label = int(prob >= threshold)
                 st.success(f"Default probability: {prob:.3f} → Predicted label: {label}")
             except Exception as e:
-                st.error("Prediction failed; ensure features align with training schema and no NaNs.")
+                st.error("Prediction failed; ensure the inputs match what the pipeline expects.")
                 st.text(traceback.format_exc())
 
-    # Batch scoring
+    # === BATCH SCORING ===
     st.markdown("### Batch Scoring")
     uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
     if uploaded_batch:
@@ -338,8 +340,8 @@ st.markdown(
     """
 ---
 **Notes:**  
-• This app does no training; the model must be pre-extracted.  
-• Light model must contain fitted preprocessing (imputer+scaler) and RF; it should not require imblearn if you want to run on Python 3.13.  
-• If you see import errors around imblearn/sklearn internals, switch runtime to Python 3.11 and pin `scikit-learn==1.6.1` + `imbalanced-learn==0.11.0`.  
+• This app does no training; the model must be pre-extracted with fitted preprocessing.  
+• For a frictionless deployment on Python 3.13 the model must NOT depend on imblearn.  
+• If you keep the original pipeline with SMOTE, run under Python 3.11 and pin `scikit-learn==1.6.1` + `imbalanced-learn==0.11.0`.  
 """
 )
