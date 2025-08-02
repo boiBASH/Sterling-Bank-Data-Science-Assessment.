@@ -5,19 +5,11 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.cluster.hierarchy import linkage, leaves_list
-from sklearn.model_selection import train_test_split
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline as ImbPipeline
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, roc_auc_score, confusion_matrix
 )
 import mlflow
-import joblib
 from PIL import Image
 
 # ---------- CONFIG ----------
@@ -26,7 +18,20 @@ LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccou
 MLFLOW_TRACKING_URI = "https://dagshub.com/boiBASH/Sterling-Bank-Data-Science-Assessment..mlflow"
 RF_RUN_ID = "ab07579390ea427eb320b944b63c8f66"
 RF_MODEL_NAME = "RandomForest_SMOTE_Optimized"
-RANDOM_STATE = 42
+
+# ---------- MLflow setup ----------
+def setup_mlflow():
+    os.environ["MLFLOW_TRACKING_USERNAME"] = st.secrets["dagshub"]["username"]
+    os.environ["MLFLOW_TRACKING_PASSWORD"] = st.secrets["dagshub"]["token"]
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
+@st.cache_resource
+def load_model():
+    setup_mlflow()
+    uri = f"runs:/{RF_RUN_ID}/{RF_MODEL_NAME}"
+    return mlflow.sklearn.load_model(uri)
+
+model = load_model()
 
 # ---------- PAGE SETUP ----------
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide", initial_sidebar_state="expanded")
