@@ -19,13 +19,13 @@ DEFAULT_THRESHOLD = 0.5
 st.set_page_config(page_title="Loan Explorer & Default Scoring", layout="wide")
 
 # === HEADER ===
-col_logo, col_title = st.columns([1, 7])
-with col_logo:
+logo_col, title_col = st.columns([1, 7])
+with logo_col:
     try:
         st.image(LOGO_PATH, width=80)
     except Exception:
         st.markdown("**Sterling Bank**")
-with col_title:
+with title_col:
     st.markdown("<h1 style='margin:0;'>📊 Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
     st.markdown("Explore loans and get a customer-facing default status.", unsafe_allow_html=True)
 
@@ -52,7 +52,7 @@ def load_raw_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"Missing data file '{DATA_PATH}'. Place {DATA_PATH} in repo root.")
+    st.error(f"Missing data file '{DATA_PATH}'. Place it in repo root.")
     st.stop()
 df_raw = load_raw_data(DATA_PATH)
 df_raw = make_cols_unique(df_raw)
@@ -93,8 +93,9 @@ def encode_df(df_in: pd.DataFrame) -> pd.DataFrame:
 df_encoded = encode_df(df_raw)
 df_encoded = make_cols_unique(df_encoded)
 
-# canonical feature list (what model expects)
-BASE_FEATURES = [c for c in df_encoded.columns if c != TARGET]
+# === DEFINE FEATURES MODEL EXPECTS ===
+EXCLUDE = [TARGET] + LEAK_COLS + DROP_REDUNDANT
+BASE_FEATURES = [c for c in df_encoded.columns if c not in EXCLUDE]
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
@@ -110,7 +111,7 @@ loan_age_range = st.sidebar.slider(
     step=10,
 )
 
-# apply filters
+# Apply filters
 filtered_raw = df_raw.copy()
 if sectors and "sector" in filtered_raw.columns:
     filtered_raw = filtered_raw[filtered_raw["sector"].isin(sectors)]
@@ -128,7 +129,7 @@ filtered_raw = make_cols_unique(filtered_raw)
 filtered_encoded = encode_df(filtered_raw)
 filtered_encoded = make_cols_unique(filtered_encoded)
 
-# === MODEL LOADING ===
+# === LOAD MODEL ===
 @st.cache_resource
 def load_model(path):
     return joblib.load(path)
@@ -141,7 +142,7 @@ try:
     model = load_model(MODEL_PATH)
     st.success("✅ Model loaded.")
 except Exception as e:
-    st.error("Failed to load model. If it relies on imblearn/SMOTE, deploy under Python 3.11 with appropriate versions.")
+    st.error("Failed to load model. If it uses imblearn/SMOTE, deploy under Python 3.11 with matching versions.")
     st.exception(e)
     st.stop()
 
@@ -291,7 +292,7 @@ with tab_score:
             if c in input_df.columns:
                 input_df = input_df.drop(columns=[c])
 
-        # align to training features
+        # align to expected features
         for feat in BASE_FEATURES:
             if feat not in input_df.columns:
                 input_df[feat] = np.nan
@@ -316,8 +317,10 @@ with tab_score:
     else:
         try:
             X_batch = filtered_encoded.copy()
-            # drop target and leaks
-            X_batch = X_batch.drop(columns=[TARGET] + LEAK_COLS, errors="ignore")
+            # drop target/leaks/redundant
+            for c in [TARGET] + LEAK_COLS + DROP_REDUNDANT:
+                if c in X_batch.columns:
+                    X_batch = X_batch.drop(columns=[c])
             for feat in BASE_FEATURES:
                 if feat not in X_batch.columns:
                     X_batch[feat] = np.nan
@@ -348,7 +351,7 @@ st.markdown(
 
 **Notes:**  
 • Categorical features are label-encoded on the fly to match training.  
-• The model expects preprocessed numeric inputs (imputer + scaler embedded).  
+• The model expects preprocessed numeric input (imputer + scaler embedded).  
 • If you kept a pipeline with SMOTE/imbalanced-learn, deploy under Python 3.11 with `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
