@@ -5,7 +5,6 @@ import joblib
 import os
 import traceback
 import plotly.express as px
-import plotly.graph_objects as go
 from sklearn.preprocessing import LabelEncoder
 
 # === CONFIG ===
@@ -90,7 +89,7 @@ def encode_df(df_in: pd.DataFrame) -> pd.DataFrame:
             df = df.drop(columns=c)
     return df
 
-# Encoded copy for exploration / batch scoring
+# Encoded for exploration / batch scoring
 df_encoded = encode_df(df_raw)
 df_encoded = make_cols_unique(df_encoded)
 
@@ -139,7 +138,7 @@ try:
     model = load_model(MODEL_PATH)
     st.success("✅ Model loaded.")
 except Exception as e:
-    st.error("Failed to load model. If it depends on imblearn/SMOTE you need Python 3.11 with pinned versions.")
+    st.error("Failed to load model. If it relies on imblearn/SMOTE, deploy under Python 3.11 with required versions.")
     st.exception(e)
     st.stop()
 
@@ -148,12 +147,12 @@ tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring
 
 with tab_explore:
     st.subheader("🔑 Key Metrics")
-    m1, m2, m3, m4 = st.columns(4)
+    a, b, c, d = st.columns(4)
     default_rate = filtered_encoded[TARGET].mean() if TARGET in filtered_encoded.columns else 0
-    m1.metric("Total Loans", f"{len(filtered_encoded):,}")
-    m2.metric("Default Rate", f"{default_rate:.2%}")
-    m3.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
-    m4.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
+    a.metric("Total Loans", f"{len(filtered_encoded):,}")
+    b.metric("Default Rate", f"{default_rate:.2%}")
+    c.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
+    d.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
 
     st.markdown("## Overview & Breakdown")
     with st.container():
@@ -238,7 +237,7 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.markdown("Interactive single-loan input. Numerical via sliders; categorical via selectboxes. Customer-facing status below.")
+    st.markdown("Interactive single-loan input. Numeric via sliders; categorical via selectboxes. Customer-facing status below.")
 
     threshold = st.slider("Default probability threshold", 0.0, 1.0, DEFAULT_THRESHOLD, 0.01)
 
@@ -267,13 +266,16 @@ with tab_score:
         st.markdown("#### Categorical Inputs")
         cat_vals = {}
         for col in categorical_inputs:
-            opts = sorted(df_raw[col].dropna().unique().tolist()) if col in df_raw.columns else []
+            if col not in df_raw.columns:
+                continue
+            opts = sorted(pd.Series(df_raw[col].dropna().astype(str).unique()).tolist())
             if not opts:
                 continue
-            default = sample_row[col] if pd.notna(sample_row[col]) else opts[0]
+            default = str(sample_row[col]) if pd.notna(sample_row[col]) else opts[0]
             index = opts.index(default) if default in opts else 0
             cat_vals[col] = st.selectbox(col, options=opts, index=index)
         submitted = st.form_submit_button("Score Loan")
+
     if submitted:
         raw_input = {}
         raw_input.update(num_vals)
@@ -293,7 +295,7 @@ with tab_score:
             st.success(f"Default probability: {prob:.3f}")
             st.info(banner)
         except Exception as e:
-            st.error("Prediction failed; ensure input features align with training.")
+            st.error("Prediction failed; ensure inputs align with training schema.")
             st.text(traceback.format_exc())
 
     # === BATCH SCORING ===
@@ -324,12 +326,12 @@ st.markdown(
     """
 ---
 **Customer-facing default status logic:**  
-• Probability >= threshold → **Default** (high risk) with warning.  
+• Probability >= threshold → **Default** (high risk) with a warning.  
 • Probability < threshold → **No Default** (low risk).  
 
 **Notes:**  
 • Categorical features are label-encoded on the fly to match training.  
-• The model expects preprocessed numeric input (imputer+scaler baked into the pipeline).  
-• If you keep a pipeline with SMOTE/imbalanced-learn, you must deploy under Python 3.11 with matching versions.  
+• The model expects preprocessed numeric inputs (imputer + scaler embedded).  
+• If you kept a pipeline with SMOTE/imbalanced-learn, run under Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
