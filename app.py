@@ -10,12 +10,11 @@ from PIL import Image
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "model.pkl"  # pre-extracted pipeline (imputer + scaler + RF)
+MODEL_PATH = "model.pkl"  # extracted pipeline: imputer + scaler + RF
 LOGO_PATH = "sterling_bank_logo.png"
 
 # === PAGE SETUP ===
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
-# Header with logo
 col_logo, col_title = st.columns([1, 8])
 with col_logo:
     try:
@@ -31,7 +30,7 @@ with col_title:
 def load_excel(path):
     return pd.read_excel(path)
 
-uploaded = st.file_uploader("Upload cleaned loan data (Excel)", type=["xlsx"], help="Or ensure cleaned_loan_data.xlsx is in repo.")
+uploaded = st.file_uploader("Upload cleaned loan data (Excel)", type=["xlsx"], help="Or have cleaned_loan_data.xlsx in repo root.")
 if uploaded:
     df = load_excel(uploaded)
 else:
@@ -41,7 +40,7 @@ else:
         st.error("Dataset not found. Upload cleaned_loan_data.xlsx.")
         st.stop()
 
-# === SIDEBAR FILTERS ===
+# === FILTERS ===
 st.sidebar.header("Filters & Cohorts")
 sectors = st.sidebar.multiselect("Sector", options=sorted(df["sector"].dropna().unique()))
 facilities = st.sidebar.multiselect("Facility Type", options=sorted(df["FACILITY_TYPE"].dropna().unique()))
@@ -72,16 +71,16 @@ filtered = filtered[
     (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
 ]
 
-# === KEY METRICS ===
+# === METRICS ===
 st.subheader("🔑 Key Metrics")
 col1, col2, col3, col4 = st.columns(4)
 default_rate = filtered[TARGET].mean() if TARGET in filtered.columns else 0
 col1.metric("Total Loans", f"{len(filtered):,}")
 col2.metric("Default Rate", f"{default_rate:.2%}")
-col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
+col3.metric("Avg Loan Age", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
 col4.metric("Unique Sectors", filtered["sector"].nunique())
 
-# === OVERVIEW & BREAKDOWN ===
+# === OVERVIEW ===
 st.markdown("## 📈 Overview & Breakdown")
 with st.container():
     c1, c2 = st.columns([2, 1])
@@ -254,7 +253,7 @@ except Exception as e:
 
 threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
 
-# --- Single loan scoring ---
+# Single scoring
 st.markdown("### Single Loan Scoring")
 example = filtered.copy()
 for c in LEAK_COLS:
@@ -280,7 +279,7 @@ if not example.empty:
         except Exception as e:
             st.error(f"Prediction failed: {e}")
 
-# --- Batch scoring ---
+# Batch scoring
 st.markdown("### Batch Scoring")
 uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
 if uploaded_batch:
@@ -313,7 +312,7 @@ st.markdown(
     """
 ---
 **Notes:**  
-• Input features must match what the model was trained on (leaks and target dropped).  
-• This app is prediction-only; the model pipeline was pre-extracted to avoid environment conflicts.  
+• Features must align with training schema (leak columns and target dropped).  
+• Prediction uses the local light model to avoid dependency conflicts.  
 """
 )
