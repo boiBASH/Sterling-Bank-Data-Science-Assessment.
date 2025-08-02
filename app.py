@@ -11,7 +11,7 @@ from PIL import Image
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
 MODEL_PATH = "model.pkl"  # extracted pipeline: imputer + scaler + RF (no imblearn)
-LOGO_PATH = "sterling_bank_logo.png"
+LOGO_PATH = "sterling bank logo.png"
 
 # === PAGE SETUP ===
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
