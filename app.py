@@ -12,7 +12,7 @@ import traceback
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "model.pkl"  # should be the re-extracted light model (no imblearn)
+MODEL_PATH = "light_rf_model.pkl"  # should be the re-extracted light model (no imblearn)
 LOGO_PATH = "sterling bank logo.png"
 DATA_PATH = "cleaned_loan_data.xlsx"
 
