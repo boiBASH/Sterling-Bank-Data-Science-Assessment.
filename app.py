@@ -5,20 +5,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 from scipy.cluster.hierarchy import linkage, leaves_list
 import joblib
-from PIL import Image
 import os
 import traceback
 
 # === CONFIG ===
 TARGET = "Default_status"
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # should be the re-extracted light model (no imblearn)
-LOGO_PATH = "sterling bank logo.png"
+MODEL_PATH = "light_rf_model.pkl"  # should be a light pipeline with fitted preprocess + RF (no imblearn)
 DATA_PATH = "cleaned_loan_data.xlsx"
+LOGO_PATH = "sterling bank logo.png"
 
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
 
-# Header
+# === HEADER ===
 col_logo, col_title = st.columns([1, 8])
 with col_logo:
     try:
@@ -26,21 +25,21 @@ with col_logo:
     except FileNotFoundError:
         st.markdown("**Sterling Bank**")
 with col_title:
-    st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Data Explorer & Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Explore loan cohorts and score default risk. Prediction is isolated in its own section.", unsafe_allow_html=True)
+    st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
+    st.markdown("Explore cleaned loan data and score default risk. Prediction is separated in its own section.", unsafe_allow_html=True)
 
-# === DATA LOAD ===
+# === DATA LOADING ===
 @st.cache_data
 def load_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"Data file '{DATA_PATH}' not found in repo root. Commit it alongside app.py.")
+    st.error(f"Data file '{DATA_PATH}' not found in repo root. Commit cleaned_loan_data.xlsx.")
     st.stop()
 
 df = load_data(DATA_PATH)
 
-# Deduplicate columns
+# dedupe columns (avoid duplicate-name plotly errors)
 def make_cols_unique(df):
     seen = {}
     new_cols = []
@@ -58,7 +57,7 @@ original_cols = df.columns.tolist()
 df = make_cols_unique(df)
 dupes = [c for c in original_cols if original_cols.count(c) > 1]
 if dupes:
-    st.warning(f"Duplicate column names were renamed: {set(dupes)}")
+    st.warning(f"Duplicate column names were deduped: {set(dupes)}")
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
@@ -75,7 +74,7 @@ loan_age_range = st.sidebar.slider(
     step=10,
 )
 
-# Apply filters
+# === APPLY FILTERS ===
 filtered = df.copy()
 if sectors:
     filtered = filtered[filtered["sector"].isin(sectors)]
@@ -91,11 +90,10 @@ filtered = filtered[
     (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
 ]
 
-# Tabs: exploration vs prediction
-tab_explore, tab_score = st.tabs(["Exploration", "Default Risk Scoring"])
+# === TABS ===
+tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring"])
 
 with tab_explore:
-    # Key metrics
     st.subheader("🔑 Key Metrics")
     col1, col2, col3, col4 = st.columns(4)
     default_rate = filtered[TARGET].mean() if TARGET in filtered.columns else 0
@@ -104,8 +102,7 @@ with tab_explore:
     col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
     col4.metric("Unique Sectors", filtered["sector"].nunique())
 
-    # Overview & breakdown
-    st.markdown("## 📈 Overview & Breakdown")
+    st.markdown("## Overview & Breakdown")
     with st.container():
         c1, c2 = st.columns([2, 1])
         with c1:
@@ -119,6 +116,7 @@ with tab_explore:
                     color_discrete_sequence=px.colors.qualitative.Set2,
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
             st.markdown("### Default Status Kind")
             if "Default_status_kind" in filtered.columns:
                 kind_df = filtered["Default_status_kind"].value_counts().reset_index()
@@ -151,7 +149,6 @@ with tab_explore:
                 fig_time.update_yaxes(tickformat=".0%")
                 st.plotly_chart(fig_time, use_container_width=True)
 
-    # Segment performance
     st.markdown("## 🧩 Segment Performance")
     seg1, seg2 = st.columns(2)
     with seg1:
@@ -190,7 +187,6 @@ with tab_explore:
             fig_fac.update_yaxes(tickformat=".0%")
             st.plotly_chart(fig_fac, use_container_width=True)
 
-    # Numeric explorer
     st.markdown("## 🔬 Numeric Feature Explorer")
     numeric_cols = filtered.select_dtypes(include=["number"]).columns.tolist()
     if numeric_cols:
@@ -220,7 +216,6 @@ with tab_explore:
                 )
                 st.plotly_chart(fig_violin, use_container_width=True)
 
-    # Correlation
     st.markdown("## 🔗 Clustered Correlation")
     if numeric_cols:
         corr_df = filtered[numeric_cols].dropna()
@@ -243,7 +238,6 @@ with tab_explore:
         fig_corr.update_layout(title="Clustered Correlation", height=500)
         st.plotly_chart(fig_corr, use_container_width=True)
 
-    # Top risky segments
     st.markdown("## 🔎 Top Risky Segments")
     segment_dims = ["sector", "FACILITY_TYPE", "employment_status"]
     combo = st.multiselect("Segment dimensions", options=segment_dims, default=segment_dims[:2])
@@ -259,37 +253,34 @@ with tab_explore:
 
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.caption("Prediction is isolated here. Model is expected to be a light pipeline (imputer+scaler+RF) without imblearn.")
+    st.caption("Prediction is isolated here. Model is expected to be a light pipeline (fitted imputer+scaler+RF) without imblearn.")
 
-    # Load model
+    # Load model defensively
     @st.cache_resource
-    def load_model(path):
+    def load_light_model(path):
         return joblib.load(path)
 
     if not os.path.exists(MODEL_PATH):
-        st.error(f"Model file '{MODEL_PATH}' missing. Either place a light model or adjust environment to support imblearn.")
+        st.error(f"Model '{MODEL_PATH}' not found. Place a properly extracted light model in repo root.")
         st.stop()
 
     model = None
     try:
-        model = load_model(MODEL_PATH)
+        model = load_light_model(MODEL_PATH)
+        st.success("✅ Model loaded.")
     except Exception as e:
-        st.error("Failed to load model. Likely it contains imblearn/SMOTE and you’re on incompatible environment.")
+        st.error("Failed to load model. Likely contains imblearn/SMOTE and you’re on Python 3.13 or incompatible environment.")
         st.markdown(
-            """
-**Fix options:**  
-- If you want to keep the current pipeline, add to `requirements.txt` and deploy under Python 3.11:  
-  `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`  
-- Or re-extract a light pipeline without SMOTE (no imblearn) in a Python 3.11 environment using the extraction script.  
-"""
+            "**Fix options:**  \n"
+            "- Re-extract a light model without SMOTE (no imblearn) using the provided extraction script.  \n"
+            "- OR run under Python 3.11 with pinned versions: `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`."
         )
         st.exception(e)
         st.stop()
 
-    # Threshold
     threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
 
-    # Single scoring
+    # Single loan scoring
     st.markdown("### Single Loan Scoring")
     example = filtered.copy()
     for c in LEAK_COLS:
@@ -297,15 +288,16 @@ with tab_score:
             example = example.drop(columns=[c])
     if TARGET in example.columns:
         example = example.drop(columns=[TARGET])
+
     if not example.empty:
         input_vals = {}
-        with st.form("score_form"):
+        with st.form("single_score"):
             for col in example.columns:
                 if pd.api.types.is_numeric_dtype(example[col]):
                     input_vals[col] = st.number_input(col, value=float(example[col].iloc[0]), key=f"num_{col}")
                 else:
                     input_vals[col] = st.text_input(col, value=str(example[col].iloc[0]), key=f"txt_{col}")
-            submitted = st.form_submit_button("Score")
+            submitted = st.form_submit_button("Score Loan")
         if submitted:
             input_df = pd.DataFrame([input_vals])
             try:
@@ -313,7 +305,7 @@ with tab_score:
                 label = int(prob >= threshold)
                 st.success(f"Default probability: {prob:.3f} → Predicted label: {label}")
             except Exception as e:
-                st.error(f"Prediction failed: {e}")
+                st.error("Prediction failed; ensure features align with training schema and no NaNs.")
                 st.text(traceback.format_exc())
 
     # Batch scoring
@@ -338,15 +330,16 @@ with tab_score:
                 "text/csv",
             )
         except Exception as e:
-            st.error(f"Batch scoring failed: {e}")
+            st.error("Batch scoring failed.")
             st.text(traceback.format_exc())
 
-# Footer
+# === FOOTER ===
 st.markdown(
     """
 ---
 **Notes:**  
-- Prediction uses the provided model; if it contains imblearn you must run under Python 3.11 with `imbalanced-learn==0.11.0` and `scikit-learn==1.6.1`.  
-- For a frictionless deployment, re-extract a light model without SMOTE (no imblearn).  
+• This app does no training; the model must be pre-extracted.  
+• Light model must contain fitted preprocessing (imputer+scaler) and RF; it should not require imblearn if you want to run on Python 3.13.  
+• If you see import errors around imblearn/sklearn internals, switch runtime to Python 3.11 and pin `scikit-learn==1.6.1` + `imbalanced-learn==0.11.0`.  
 """
 )
