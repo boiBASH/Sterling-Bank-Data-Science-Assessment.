@@ -6,6 +6,5 @@ plotly
 scipy
 mlflow
 scikit-learn
-imblearn
 joblib
 Pillow
