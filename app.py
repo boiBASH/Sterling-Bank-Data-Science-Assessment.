@@ -17,7 +17,6 @@ DATA_PATH = "cleaned_loan_data.xlsx"
 
 # === PAGE SETUP ===
 st.set_page_config(page_title="Sterling Loan Explorer", layout="wide")
-# Header
 col_logo, col_title = st.columns([1, 8])
 with col_logo:
     try:
@@ -26,9 +25,9 @@ with col_logo:
         st.markdown("**Sterling Bank**")
 with col_title:
     st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Data Explorer & Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Prediction-only dashboard using pre-extracted model; visual exploration of loan cohorts.", unsafe_allow_html=True)
+    st.markdown("Prediction-only dashboard using the extracted model; explore cohorts and score loans.", unsafe_allow_html=True)
 
-# === DATA LOADING (from repo root) ===
+# === DATA LOADING ===
 @st.cache_data
 def load_data(path):
     return pd.read_excel(path)
@@ -114,15 +113,11 @@ with st.container():
                 color_discrete_sequence=px.colors.qualitative.Set2,
             )
             st.plotly_chart(fig, use_container_width=True)
+
         st.markdown("### Default Status Kind")
         if "Default_status_kind" in filtered.columns:
-            kind_df = (
-                filtered["Default_status_kind"]
-                .value_counts()
-                .reset_index()
-                .rename(columns={"index": "kind", "Default_status_kind": "count"})
-            )
-            kind_df = kind_df.loc[:, ~kind_df.columns.duplicated()]
+            kind_df = filtered["Default_status_kind"].value_counts().reset_index()
+            kind_df.columns = ["kind", "count"]
             fig_kind = px.bar(
                 kind_df,
                 x="kind",
@@ -132,6 +127,7 @@ with st.container():
                 color_continuous_scale="Blues",
             )
             st.plotly_chart(fig_kind, use_container_width=True)
+
     with c2:
         st.markdown("### Default Rate Over Time")
         if "report_date" in filtered.columns:
@@ -259,14 +255,14 @@ if combo:
 
 # === MODEL LOADING & PREDICTION ===
 st.markdown("## 🧠 Default Risk Scoring")
-st.caption("Using a locally stored light RandomForest pipeline (no imblearn).")
+st.caption("Using a local light RandomForest pipeline (imputer + scaler + RF).")
 
 @st.cache_resource
 def load_light_model(path):
     return joblib.load(path)
 
 if not os.path.exists(MODEL_PATH):
-    st.error(f"{MODEL_PATH} not found. Run extraction script to produce it and commit to repo.")
+    st.error(f"{MODEL_PATH} not found. Ensure you have extracted it and committed it.")
     st.stop()
 
 try:
@@ -277,7 +273,7 @@ except Exception as e:
 
 threshold = st.slider("Default probability threshold", 0.0, 1.0, 0.5, 0.01)
 
-# Single loan scoring
+# Single scoring
 st.markdown("### Single Loan Scoring")
 example = filtered.copy()
 for c in LEAK_COLS:
@@ -303,11 +299,9 @@ if not example.empty:
         except Exception as e:
             st.error(f"Prediction failed: {e}")
 
-# Batch scoring
+# Batch scoring (optional upload)
 st.markdown("### Batch Scoring")
-batch_path = "batch_to_score.csv"
-# No uploader since using repo data; optionally you can read a fixed CSV if present
-uploaded_batch = st.file_uploader("Upload batch CSV for scoring (optional)", type=["csv"], key="batch")
+uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
 if uploaded_batch:
     batch = pd.read_csv(uploaded_batch)
     for c in LEAK_COLS:
@@ -338,7 +332,7 @@ st.markdown(
     """
 ---
 **Notes:**  
-• Features must align with the training schema (leak columns and target dropped).  
-• Model pipeline was pre-extracted; this app does no training.  
+• Input features must match the training schema (leak columns and target dropped).  
+• This app does no training; the model pipeline was pre-extracted to avoid dependency/version issues.  
 """
 )
