@@ -1,17 +1,19 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from scipy.cluster.hierarchy import linkage, leaves_list
 import joblib
 import os
 import traceback
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy.cluster.hierarchy import linkage, leaves_list
+from sklearn.preprocessing import LabelEncoder
 
 # === CONFIG ===
 TARGET = "Default_status"
+DROP_REDUNDANT = ["Default_status_kind", "ARR_STATUS", "LINE_DESC"]
 LEAK_COLS = ["DAYS_TO_MATURITY", "CONTRACT_MAT_DATE", "report_date", "PayinAccount_Last_LOD_Date"]
-MODEL_PATH = "light_rf_model.pkl"  # must be the extracted pipeline with fitted preprocessing + RF
+MODEL_PATH = "light_rf_model.pkl"  # should be pipeline with fitted preprocessing + RF
 DATA_PATH = "cleaned_loan_data.xlsx"
 LOGO_PATH = "sterling bank logo.png"
 
@@ -25,92 +27,115 @@ with col_logo:
     except FileNotFoundError:
         st.markdown("**Sterling Bank**")
 with col_title:
-    st.markdown("<h1 style='margin:0;'>📊 Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
-    st.markdown("Explore loan data and score default risk. Prediction lives in its own section.", unsafe_allow_html=True)
+    st.markdown("<h1 style='margin:0;'> Sterling Loan Explorer & Default Risk Scoring</h1>", unsafe_allow_html=True)
+    st.markdown("Explore and score loans. Prediction is isolated in its own section.", unsafe_allow_html=True)
 
-# === DATA LOADING ===
+# === LOAD DATA ===
 @st.cache_data
-def load_data(path):
+def load_raw_data(path):
     return pd.read_excel(path)
 
 if not os.path.exists(DATA_PATH):
-    st.error(f"Data file '{DATA_PATH}' not found in repo root. Commit cleaned_loan_data.xlsx.")
+    st.error(f"{DATA_PATH} missing in repo root.")
     st.stop()
 
-df = load_data(DATA_PATH)
+df_raw = load_raw_data(DATA_PATH)
+
+# === PREPROCESS: label encode exactly like training ===
+categorical_cols = df_raw.select_dtypes(include="object").columns.tolist()
+for rm in DROP_REDUNDANT:
+    if rm in categorical_cols:
+        categorical_cols.remove(rm)
+if TARGET in categorical_cols:
+    categorical_cols.remove(TARGET)
+
+label_encoders = {}
+for col in categorical_cols:
+    le = LabelEncoder()
+    df_raw[col] = df_raw[col].astype(str).fillna("___MISSING___")
+    le.fit(df_raw[col])
+    label_encoders[col] = le
+
+def encode_dataframe(df_in):
+    df = df_in.copy()
+    for col in categorical_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).fillna("___MISSING___")
+            df[col] = label_encoders[col].transform(df[col])
+    for c in DROP_REDUNDANT:
+        if c in df.columns:
+            df = df.drop(columns=c)
+    return df
+
+df_encoded = encode_dataframe(df_raw)
 
 # === DEDUPE COLUMNS ===
 def make_cols_unique(df):
     seen = {}
-    new_cols = []
-    for col in df.columns:
-        if col in seen:
-            seen[col] += 1
-            new_cols.append(f"{col}.{seen[col]}")
+    new = []
+    for c in df.columns:
+        if c in seen:
+            seen[c] += 1
+            new.append(f"{c}.{seen[c]}")
         else:
-            seen[col] = 0
-            new_cols.append(col)
-    df.columns = new_cols
+            seen[c] = 0
+            new.append(c)
+    df.columns = new
     return df
 
-original_cols = df.columns.tolist()
-df = make_cols_unique(df)
-dupes = [c for c in original_cols if original_cols.count(c) > 1]
-if dupes:
-    st.warning(f"Duplicate column names were deduped: {set(dupes)}")
+df_encoded = make_cols_unique(df_encoded)
 
 # === SIDEBAR FILTERS ===
 st.sidebar.header("Filters & Cohorts")
-sectors = st.sidebar.multiselect("Sector", options=sorted(df["sector"].dropna().unique()) if "sector" in df.columns else [])
-facilities = st.sidebar.multiselect("Facility Type", options=sorted(df["FACILITY_TYPE"].dropna().unique()) if "FACILITY_TYPE" in df.columns else [])
-is_active = st.sidebar.selectbox("Is Active Loans", ["All", "Active", "Inactive"])
-employment = st.sidebar.multiselect("Employment Status", options=sorted(df["employment_status"].dropna().unique()) if "employment_status" in df.columns else [])
-default_kind = st.sidebar.multiselect("Default Status Kind", options=sorted(df["Default_status_kind"].dropna().unique()) if "Default_status_kind" in df.columns else [])
+sectors = st.sidebar.multiselect("Sector", options=sorted(df_raw["sector"].dropna().unique()) if "sector" in df_raw.columns else [])
+facilities = st.sidebar.multiselect("Facility Type", options=sorted(df_raw["FACILITY_TYPE"].dropna().unique()) if "FACILITY_TYPE" in df_raw.columns else [])
+employment = st.sidebar.multiselect("Employment Status", options=sorted(df_raw["employment_status"].dropna().unique()) if "employment_status" in df_raw.columns else [])
+default_kind = st.sidebar.multiselect("Default Status Kind", options=sorted(df_raw["Default_status_kind"].dropna().unique()) if "Default_status_kind" in df_raw.columns else [])
 loan_age_range = st.sidebar.slider(
     "Loan Age Days",
-    min_value=int(df["loan_age_days"].dropna().min()) if "loan_age_days" in df.columns else 0,
-    max_value=int(df["loan_age_days"].dropna().quantile(0.99)) if "loan_age_days" in df.columns else 1,
-    value=(0, int(df["loan_age_days"].dropna().quantile(0.75))) if "loan_age_days" in df.columns else (0, 1),
+    min_value=int(df_raw["loan_age_days"].dropna().min()) if "loan_age_days" in df_raw.columns else 0,
+    max_value=int(df_raw["loan_age_days"].dropna().quantile(0.99)) if "loan_age_days" in df_raw.columns else 1,
+    value=(0, int(df_raw["loan_age_days"].dropna().quantile(0.75))) if "loan_age_days" in df_raw.columns else (0, 1),
     step=10,
 )
 
-# === APPLY FILTERS ===
-filtered = df.copy()
-if sectors and "sector" in filtered.columns:
-    filtered = filtered[filtered["sector"].isin(sectors)]
-if facilities and "FACILITY_TYPE" in filtered.columns:
-    filtered = filtered[filtered["FACILITY_TYPE"].isin(facilities)]
-if is_active != "All" and "Is_Active_loans" in filtered.columns:
-    filtered = filtered[filtered["Is_Active_loans"].str.contains(is_active, case=False, na=False)]
-if employment and "employment_status" in filtered.columns:
-    filtered = filtered[filtered["employment_status"].isin(employment)]
-if default_kind and "Default_status_kind" in filtered.columns:
-    filtered = filtered[filtered["Default_status_kind"].isin(default_kind)]
-if "loan_age_days" in filtered.columns:
-    filtered = filtered[
-        (filtered["loan_age_days"] >= loan_age_range[0]) & (filtered["loan_age_days"] <= loan_age_range[1])
+# Apply filters
+filtered_raw = df_raw.copy()
+if sectors and "sector" in filtered_raw.columns:
+    filtered_raw = filtered_raw[filtered_raw["sector"].isin(sectors)]
+if facilities and "FACILITY_TYPE" in filtered_raw.columns:
+    filtered_raw = filtered_raw[filtered_raw["FACILITY_TYPE"].isin(facilities)]
+if employment and "employment_status" in filtered_raw.columns:
+    filtered_raw = filtered_raw[filtered_raw["employment_status"].isin(employment)]
+if default_kind and "Default_status_kind" in filtered_raw.columns:
+    filtered_raw = filtered_raw[filtered_raw["Default_status_kind"].isin(default_kind)]
+if "loan_age_days" in filtered_raw.columns:
+    filtered_raw = filtered_raw[
+        (filtered_raw["loan_age_days"] >= loan_age_range[0]) & (filtered_raw["loan_age_days"] <= loan_age_range[1])
     ]
+
+filtered_encoded = encode_dataframe(filtered_raw)
 
 # === TABS ===
 tab_explore, tab_score = st.tabs(["📊 Exploration", "🧠 Default Risk Scoring"])
 
 with tab_explore:
     st.subheader("🔑 Key Metrics")
-    col1, col2, col3, col4 = st.columns(4)
-    default_rate = filtered[TARGET].mean() if TARGET in filtered.columns else 0
-    col1.metric("Total Loans", f"{len(filtered):,}")
-    col2.metric("Default Rate", f"{default_rate:.2%}")
-    col3.metric("Avg Loan Age (days)", f"{filtered['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered.columns else "N/A")
-    col4.metric("Unique Sectors", filtered["sector"].nunique() if "sector" in filtered.columns else 0)
+    c1, c2, c3, c4 = st.columns(4)
+    default_rate = filtered_encoded[TARGET].mean() if TARGET in filtered_encoded.columns else 0
+    c1.metric("Total Loans", f"{len(filtered_encoded):,}")
+    c2.metric("Default Rate", f"{default_rate:.2%}")
+    c3.metric("Avg Loan Age (days)", f"{filtered_raw['loan_age_days'].mean():.1f}" if "loan_age_days" in filtered_raw.columns else "N/A")
+    c4.metric("Unique Sectors", filtered_raw["sector"].nunique() if "sector" in filtered_raw.columns else 0)
 
     st.markdown("## Overview & Breakdown")
     with st.container():
-        c1, c2 = st.columns([2, 1])
-        with c1:
+        left, right = st.columns([2, 1])
+        with left:
             st.markdown("### Default Status")
-            if TARGET in filtered.columns:
+            if TARGET in filtered_encoded.columns:
                 fig = px.pie(
-                    filtered,
+                    filtered_encoded,
                     names=TARGET,
                     title="Defaults vs Non-defaults",
                     hole=0.35,
@@ -118,10 +143,14 @@ with tab_explore:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("### Default Status Kind")
-            if "Default_status_kind" in filtered.columns:
-                kind_df = filtered["Default_status_kind"].value_counts().reset_index()
-                kind_df.columns = ["kind", "count"]
+            st.markdown("### Default Status Kind (raw)")
+            if "Default_status_kind" in filtered_raw.columns:
+                kind_df = (
+                    filtered_raw["Default_status_kind"]
+                    .value_counts()
+                    .reset_index()
+                    .rename(columns={"index": "kind", "Default_status_kind": "count"})
+                )
                 fig_kind = px.bar(
                     kind_df,
                     x="kind",
@@ -131,11 +160,11 @@ with tab_explore:
                     color_continuous_scale="Blues",
                 )
                 st.plotly_chart(fig_kind, use_container_width=True)
-        with c2:
+        with right:
             st.markdown("### Default Rate Over Time")
-            if "report_date" in filtered.columns and TARGET in filtered.columns:
+            if "report_date" in filtered_raw.columns and TARGET in filtered_encoded.columns:
                 time_series = (
-                    filtered.assign(report_date=pd.to_datetime(filtered["report_date"]).dt.date)
+                    filtered_raw.assign(report_date=pd.to_datetime(filtered_raw["report_date"]).dt.date)
                     .groupby("report_date")[TARGET]
                     .mean()
                     .reset_index(name="default_rate")
@@ -151,11 +180,11 @@ with tab_explore:
                 st.plotly_chart(fig_time, use_container_width=True)
 
     st.markdown("## 🧩 Segment Performance")
-    seg1, seg2 = st.columns(2)
-    with seg1:
-        if "sector" in filtered.columns:
+    s1, s2 = st.columns(2)
+    with s1:
+        if "sector" in filtered_raw.columns:
             sector_perf = (
-                filtered.groupby("sector")
+                filtered_encoded.groupby(filtered_encoded["sector"])
                 .agg(default_rate=(TARGET, "mean"), count=(TARGET, "size"))
                 .reset_index()
                 .sort_values("default_rate", ascending=False)
@@ -165,15 +194,15 @@ with tab_explore:
                 x="sector",
                 y="default_rate",
                 color="count",
-                title="Default Rate by Sector",
+                title="Default Rate by Sector (encoded)",
                 hover_data={"count": True, "default_rate": ":.1%"},
             )
             fig_sector.update_yaxes(tickformat=".0%")
             st.plotly_chart(fig_sector, use_container_width=True)
-    with seg2:
-        if "FACILITY_TYPE" in filtered.columns:
+    with s2:
+        if "FACILITY_TYPE" in filtered_raw.columns:
             fac_perf = (
-                filtered.groupby("FACILITY_TYPE")
+                filtered_encoded.groupby(filtered_encoded["FACILITY_TYPE"])
                 .agg(default_rate=(TARGET, "mean"), count=(TARGET, "size"))
                 .reset_index()
                 .sort_values("default_rate", ascending=False)
@@ -182,99 +211,30 @@ with tab_explore:
                 fac_perf.head(15),
                 x="FACILITY_TYPE",
                 y="default_rate",
-                title="Top Facility Types by Default Rate",
+                title="Default Rate by Facility Type",
                 hover_data={"count": True},
             )
             fig_fac.update_yaxes(tickformat=".0%")
             st.plotly_chart(fig_fac, use_container_width=True)
 
-    st.markdown("## 🔬 Numeric Feature Explorer")
-    numeric_cols = filtered.select_dtypes(include=["number"]).columns.tolist()
-    if numeric_cols:
-        chosen = st.selectbox("Select numeric feature", options=numeric_cols, index=0)
-        d1, d2 = st.columns(2)
-        with d1:
-            fig_hist = px.histogram(
-                filtered,
-                x=chosen,
-                nbins=50,
-                title=f"Distribution of {chosen}",
-                marginal="box",
-                template="plotly_white",
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
-        with d2:
-            if TARGET in filtered.columns:
-                fig_violin = px.violin(
-                    filtered,
-                    x=TARGET,
-                    y=chosen,
-                    box=True,
-                    points="all",
-                    title=f"{chosen} by Default Status",
-                    color=TARGET,
-                    color_discrete_map={0: "#00CC96", 1: "#EF553B"},
-                )
-                st.plotly_chart(fig_violin, use_container_width=True)
-
-    st.markdown("## 🔗 Clustered Correlation")
-    if numeric_cols:
-        corr_df = filtered[numeric_cols].dropna()
-        if corr_df.shape[0] > 1000:
-            corr_df = corr_df.sample(1000, random_state=42)
-        corr = corr_df.corr()
-        link = linkage(corr, method="average")
-        order = leaves_list(link)
-        corr_ord = corr.iloc[order, order]
-        fig_corr = go.Figure(
-            go.Heatmap(
-                z=corr_ord.values,
-                x=corr_ord.columns,
-                y=corr_ord.index,
-                colorscale="RdBu",
-                zmid=0,
-                hovertemplate="%{x} vs %{y}: %{z:.2f}<extra></extra>",
-            )
-        )
-        fig_corr.update_layout(title="Clustered Correlation", height=500)
-        st.plotly_chart(fig_corr, use_container_width=True)
-
-    st.markdown("## 🔎 Top Risky Segments")
-    segment_dims = ["sector", "FACILITY_TYPE", "employment_status"]
-    combo = st.multiselect("Segment dimensions", options=segment_dims, default=segment_dims[:2])
-    if combo:
-        seg_df = (
-            filtered.groupby(combo)
-            .agg(default_rate=(TARGET, "mean"), count=(TARGET, "size"))
-            .reset_index()
-            .sort_values("default_rate", ascending=False)
-        )
-        seg_df["default_rate"] = seg_df["default_rate"].map("{:.1%}".format)
-        st.dataframe(seg_df.head(15), use_container_width=True)
-
 with tab_score:
     st.subheader("🧠 Default Risk Scoring")
-    st.caption("Prediction is isolated here. Model is expected to be a light pipeline (fitted preprocessing + RF) without imblearn.")
+    st.caption("Raw inputs are label-encoded before scoring. Batch uses the filtered slice.")
 
     # === MODEL LOAD ===
     @st.cache_resource
-    def load_light_model(path):
+    def load_model(path):
         return joblib.load(path)
 
     if not os.path.exists(MODEL_PATH):
-        st.error(f"Model file '{MODEL_PATH}' not found. Place the correctly extracted light model in repo root.")
+        st.error(f"Model '{MODEL_PATH}' not found.")
         st.stop()
 
     try:
-        model = load_light_model(MODEL_PATH)
+        model = load_model(MODEL_PATH)
         st.success("✅ Model loaded.")
     except Exception as e:
-        st.error("Failed to load model. It likely still embeds imblearn/SMOTE and you're running on incompatible environment.")
-        st.markdown(
-            "**Fix options:**  \n"
-            "- Re-extract a light model without SMOTE (no imblearn) using the extraction script.  \n"
-            "- OR switch to Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0` if you want to keep the original pipeline."
-        )
+        st.error("Failed to load model. If it embeds imblearn/SMOTE you may need Python 3.11 with matching versions.")
         st.exception(e)
         st.stop()
 
@@ -282,57 +242,59 @@ with tab_score:
 
     # === SINGLE LOAN SCORING ===
     st.markdown("### Single Loan Scoring")
-    example = filtered.copy()
-    for c in LEAK_COLS:
-        if c in example.columns:
-            example = example.drop(columns=[c])
-    if TARGET in example.columns:
-        example = example.drop(columns=[TARGET])
-
-    if not example.empty:
+    example_raw = filtered_raw.copy()
+    for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
+        if c in example_raw.columns:
+            example_raw = example_raw.drop(columns=[c])
+    if example_raw.empty:
+        st.warning("No features available for single scoring.")
+    else:
         input_vals = {}
-        with st.form("single_score"):
-            for col in example.columns:
-                sample_val = example[col].dropna().iloc[0] if not example[col].dropna().empty else ""
-                if pd.api.types.is_numeric_dtype(example[col]):
-                    input_vals[col] = st.number_input(col, value=float(sample_val) if sample_val != "" else 0.0, key=f"num_{col}")
+        with st.form("single_score_form"):
+            for col in example_raw.columns:
+                sample = example_raw[col].dropna().iloc[0] if not example_raw[col].dropna().empty else ""
+                if pd.api.types.is_numeric_dtype(example_raw[col]):
+                    input_vals[col] = st.number_input(col, value=float(sample) if sample != "" else 0.0, key=f"num_{col}")
                 else:
-                    input_vals[col] = st.text_input(col, value=str(sample_val), key=f"txt_{col}")
+                    input_vals[col] = st.text_input(col, value=str(sample), key=f"txt_{col}")
             submitted = st.form_submit_button("Score Loan")
         if submitted:
             input_df = pd.DataFrame([input_vals])
+            for col in categorical_cols:
+                if col in input_df.columns:
+                    input_df[col] = input_df[col].astype(str).fillna("___MISSING___")
+                    input_df[col] = label_encoders[col].transform(input_df[col])
+            for c in LEAK_COLS + [TARGET] + DROP_REDUNDANT:
+                if c in input_df.columns:
+                    input_df = input_df.drop(columns=[c])
             input_df = input_df.replace("", np.nan)
             try:
                 prob = model.predict_proba(input_df)[:, 1][0]
                 label = int(prob >= threshold)
                 st.success(f"Default probability: {prob:.3f} → Predicted label: {label}")
             except Exception as e:
-                st.error("Prediction failed; ensure the inputs match what the pipeline expects.")
+                st.error("Prediction failed; check input formatting and feature alignment.")
                 st.text(traceback.format_exc())
 
-    # === BATCH SCORING ===
-    st.markdown("### Batch Scoring")
-    uploaded_batch = st.file_uploader("Upload CSV for batch scoring", type=["csv"], key="batch")
-    if uploaded_batch:
-        batch = pd.read_csv(uploaded_batch)
-        for c in LEAK_COLS:
-            if c in batch.columns:
-                batch = batch.drop(columns=[c])
-        if TARGET in batch.columns:
-            batch = batch.drop(columns=[TARGET])
+    # === BATCH SCORING ON FILTERED SLICE ===
+    st.markdown("### Batch Scoring (Filtered Slice)")
+    if filtered_encoded.empty:
+        st.warning("Filtered slice is empty; nothing to score.")
+    else:
         try:
-            probs = model.predict_proba(batch)[:, 1]
-            batch["default_probability"] = probs
-            batch["predicted_default"] = (probs >= threshold).astype(int)
-            st.dataframe(batch.head(50))
+            preds = model.predict_proba(filtered_encoded.drop(columns=[TARGET], errors="ignore"))[:, 1]
+            output = filtered_raw.copy()
+            output["default_probability"] = preds
+            output["predicted_default"] = (preds >= threshold).astype(int)
+            st.dataframe(output.head(50))
             st.download_button(
-                "Download scored batch",
-                batch.to_csv(index=False).encode("utf-8"),
-                "scored_loans.csv",
+                "Download scored filtered slice",
+                output.to_csv(index=False).encode("utf-8"),
+                "scored_filtered_loans.csv",
                 "text/csv",
             )
         except Exception as e:
-            st.error("Batch scoring failed.")
+            st.error("Batch scoring failed on filtered slice.")
             st.text(traceback.format_exc())
 
 # === FOOTER ===
@@ -340,8 +302,8 @@ st.markdown(
     """
 ---
 **Notes:**  
-• This app does no training; the model must be pre-extracted with fitted preprocessing.  
-• For a frictionless deployment on Python 3.13 the model must NOT depend on imblearn.  
-• If you keep the original pipeline with SMOTE, run under Python 3.11 and pin `scikit-learn==1.6.1` + `imbalanced-learn==0.11.0`.  
+• Categorical inputs are label-encoded exactly as in training.  
+• The model must embed the fitted preprocessing (so raw label-encoded inputs work) and preferably not depend on imblearn for Python 3.13.  
+• If you retain the original pipeline with SMOTE, deploy under Python 3.11 with pinned `scikit-learn==1.6.1` and `imbalanced-learn==0.11.0`.  
 """
 )
