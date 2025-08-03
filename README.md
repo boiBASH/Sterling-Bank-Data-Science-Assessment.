@@ -49,6 +49,7 @@ The project workflow is structured into clear stages:
 * Interactive Streamlit web application
 * User input for real-time prediction
 * Visualization of prediction outcomes
+* Link to the app: https://loanexplorer.streamlit.app/
 
 ---
 
